@@ -1,0 +1,351 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploy a service on AWS Fargate, hosted in a public subnet, and accessible via a public load balancer.
+Parameters:
+  StackName:
+    Type: String
+    Default: sb-assessment-cluster
+    AllowedPattern: .+
+    Description:
+      The name of the parent Fargate networking stack that you created. Necessary
+      to locate and reference resources created by that stack.
+  ClientId:
+    Type: String
+    Default: ""
+    Description: The client Id value to make authentication for specific starling bank account.
+  ClientSecret:
+    Type: String
+    Default: ""
+    Description: The client Secret value to make authentication for specific starling bank account
+  CurrencyExchangeServiceName:
+    Type: String
+    Default: curreny-exchange
+    Description: A name for the service
+  CurrencyConversionServiceName:
+    Type: String
+    Default: currency-conversion
+    Description: A name for the service
+  CurrencyExchangeImageUrl:
+    Type: String
+    Default: habettesticulos/aws-currency-exchange-service-mysql:0.0.1-SNAPSHOT
+    Description:
+      The url of a docker image that contains the application process that
+      will handle the traffic for this service
+  CurrencyConversionImageUrl:
+    Type: String
+    Default: in28min/aws-currency-conversion-service:0.0.1-SNAPSHOT
+    Description:
+      The url of a docker image that contains the application process that
+      will handle the traffic for this service
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    Description: How much CPU to give the container. 1024 is 1 CPU
+  ContainerMemory:
+    Type: Number
+    Default: 512
+    Description: How much memory in megabytes to give the container
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: How many copies of the service task to run
+  Role:
+    Type: String
+    Default: ""
+    Description:
+      (Optional) An IAM role to give the service's containers if the code within needs to
+      access other AWS resources like S3 buckets, DynamoDB tables, etc
+  DBInstanceIdentifier:
+    Type: String
+    Default: "exchange-db-id"
+  DBName:
+    Type: String
+    Default: "exchange-db"
+  DBUsername:
+    NoEcho: "true"
+    Description: Username for Postgresql database access
+    Type: String
+    MinLength: "1"
+    MaxLength: "16"
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters.
+    Default: "postgres"
+  DBPassword:
+    NoEcho: "true"
+    Description: Password Postgresql database access
+    Type: String
+    MinLength: "8"
+    MaxLength: "41"
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: Must contain only alphanumeric characters.
+Conditions:
+  HasCustomRole: !Not [!Equals [!Ref "Role", ""]]
+  HasCustomAuthorizationConfig:
+    !And [
+      !Not [!Equals [!Ref "ClientId", ""]],
+      !Not [!Equals [!Ref "ClientSecret", ""]],
+    ]
+Resources:
+  # The task definition. This is a simple metadata description of what
+  # container to run, and what resource requirements it has.
+  CurrencyExchangeCloudwatchLogsGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Join
+        - "-"
+        - - ECSLogGroup
+          - !Ref "CurrencyExchangeServiceName"
+      RetentionInDays: 14
+  CurrencyConversionCloudwatchLogsGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Join
+        - "-"
+        - - ECSLogGroup
+          - !Ref "CurrencyConversionServiceName"
+      RetentionInDays: 14
+  CurrencyExchangeTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref "CurrencyExchangeServiceName"
+      Cpu: !Ref "ContainerCpu"
+      Memory: !Ref "ContainerMemory"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn:
+        Fn::ImportValue: !Join [":", [!Ref "StackName", "ECSTaskExecutionRole"]]
+      TaskRoleArn:
+        Fn::If:
+          - "HasCustomRole"
+          - !Ref "Role"
+          - !Ref "AWS::NoValue"
+      ContainerDefinitions:
+        - Name: !Ref "CurrencyExchangeServiceName"
+          Cpu: !Ref "ContainerCpu"
+          Memory: !Ref "ContainerMemory"
+          Image: !Ref "CurrencyExchangeImageUrl"
+          Environment:
+            - Name: RDS_DB_NAME
+              Value: !Ref DBName
+            - Name: RDS_PORT
+              Value: !GetAtt "WebAppDatabase.Endpoint.Port"
+            - Name: RDS_HOSTNAME
+              Value: !GetAtt "WebAppDatabase.Endpoint.Address"
+            - Name: RDS_USERNAME
+              Value: !Ref DBUsername
+            - Name: RDS_PASSWORD
+              Value: !Ref DBPassword
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CurrencyExchangeCloudwatchLogsGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: ecs
+          PortMappings:
+            - ContainerPort: 8000
+
+  # The task definition. This is a simple metadata description of what
+  # container to run, and what resource requirements it has.
+  CurrencyConversionTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref "CurrencyConversionServiceName"
+      Cpu: !Ref "ContainerCpu"
+      Memory: !Ref "ContainerMemory"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn:
+        Fn::ImportValue: !Join [":", [!Ref "StackName", "ECSTaskExecutionRole"]]
+      TaskRoleArn:
+        Fn::If:
+          - "HasCustomRole"
+          - !Ref "Role"
+          - !Ref "AWS::NoValue"
+      ContainerDefinitions:
+        - Name: !Ref "CurrencyConversionServiceName"
+          Cpu: !Ref "ContainerCpu"
+          Memory: !Ref "ContainerMemory"
+          Image: !Ref "CurrencyConversionImageUrl"
+          Environment:
+            - Name: CURRENCY_EXCHANGE_URI
+              Value:
+                Fn::ImportValue:
+                  !Join [":", [!Ref "StackName", "LoadBalancerUrl"]]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CurrencyConversionCloudwatchLogsGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: ecs
+          PortMappings:
+            - ContainerPort: 8100
+
+  # The service. The service is a resource which allows you to run multiple
+  # copies of a type of task, and gather up their logs and metrics, as well
+  # as monitor the number of running tasks and replace any that have crashed
+  CurrencyExchangeService:
+    Type: AWS::ECS::Service
+    DependsOn: CurrencyExchangeLoadBalancerRule
+    Properties:
+      ServiceName: !Ref "CurrencyExchangeServiceName"
+      Cluster:
+        Fn::ImportValue: !Join [":", [!Ref "StackName", "ClusterName"]]
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: !Ref "DesiredCount"
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - Fn::ImportValue:
+                !Join [
+                  ":",
+                  [
+                    !Ref "StackName",
+                    "CurrencyExchangeFargateContainerSecurityGroup",
+                  ],
+                ]
+          Subnets:
+            - Fn::ImportValue:
+                !Join [":", [!Ref "StackName", "PublicSubnetOne"]]
+            - Fn::ImportValue:
+                !Join [":", [!Ref "StackName", "PublicSubnetTwo"]]
+      TaskDefinition: !Ref "CurrencyExchangeTaskDefinition"
+      LoadBalancers:
+        - ContainerName: !Ref "CurrencyExchangeServiceName"
+          ContainerPort: 8000
+          TargetGroupArn: !Ref "CurrencyExchangeTargetGroup"
+
+  CurrencyConversionService:
+    Type: AWS::ECS::Service
+    DependsOn: CurrencyConversionLoadBalancerRule
+    Properties:
+      ServiceName: !Ref "CurrencyConversionServiceName"
+      Cluster:
+        Fn::ImportValue: !Join [":", [!Ref "StackName", "ClusterName"]]
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: !Ref "DesiredCount"
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - Fn::ImportValue:
+                !Join [
+                  ":",
+                  [
+                    !Ref "StackName",
+                    "CurrencyConversionFargateContainerSecurityGroup",
+                  ],
+                ]
+          Subnets:
+            - Fn::ImportValue:
+                !Join [":", [!Ref "StackName", "PublicSubnetOne"]]
+            - Fn::ImportValue:
+                !Join [":", [!Ref "StackName", "PublicSubnetTwo"]]
+      TaskDefinition: !Ref "CurrencyConversionTaskDefinition"
+      LoadBalancers:
+        - ContainerName: !Ref "CurrencyConversionServiceName"
+          ContainerPort: 8100
+          TargetGroupArn: !Ref "CurrencyConversionTargetGroup"
+
+  # A target group. This is used for keeping track of all the tasks, and
+  # what IP addresses / port numbers they have. You can query it yourself,
+  # to use the addresses yourself, but most often this target group is just
+  # connected to an application load balancer, or network load balancer, so
+  # it can automatically distribute traffic across all the targets.
+  CurrencyExchangeTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 120
+      HealthCheckPath: /api/currency-exchange-microservice/manage/health
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 60
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Name: !Ref "CurrencyExchangeServiceName"
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue: !Join [":", [!Ref "StackName", "VPCId"]]
+
+  # Create a rule on the load balancer for routing traffic to the target group
+  CurrencyExchangeLoadBalancerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref "CurrencyExchangeTargetGroup"
+          Type: "forward"
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/currency-exchange-microservice/*"]
+      ListenerArn:
+        Fn::ImportValue:
+          !Join [":", [!Ref "StackName", "CurrencyExchangePublicListener"]]
+      Priority: 1
+
+  CurrencyConversionTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 120
+      HealthCheckPath: /api/currency-conversion-microservice/manage/health
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 60
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Name: !Ref "CurrencyConversionServiceName"
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue: !Join [":", [!Ref "StackName", "VPCId"]]
+
+  # Create a rule on the load balancer for routing traffic to the target group
+  CurrencyConversionLoadBalancerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref "CurrencyConversionTargetGroup"
+          Type: "forward"
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/currency-conversion-microservice/*"]
+      ListenerArn:
+        Fn::ImportValue:
+          !Join [":", [!Ref "StackName", "CurrencyExchangePublicListener"]]
+      Priority: 2
+  WebAppDatabase:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      DBName: !Ref DBName
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Join [":", [!Ref "StackName", "DBEC2SecurityGroup"]]
+      AllocatedStorage: "20"
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "am got meme"
+      SubnetIds:
+        - Fn::ImportValue: !Join [":", [!Ref "StackName", "PrivateSubnetOne"]]
+        - Fn::ImportValue: !Join [":", [!Ref "StackName", "PrivateSubnetTwo"]]
+Outputs:
+  Uri:
+    Description: Application uri
+    Value:
+      Fn::ImportValue: !Join [":", [!Ref "StackName", "LoadBalancerUrl"]]
+    Export:
+      Name: Uri
